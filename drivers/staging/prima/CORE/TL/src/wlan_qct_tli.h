@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2013, 2015 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -122,6 +122,7 @@ when        who    what, where, why
 
 /*WAPI protocol type */
 #define WLANTL_LLC_WAI_TYPE              0x88b4
+#define WLANTL_ETHERTYPE_ARP             0x0806
 
 #ifdef FEATURE_WLAN_TDLS
 #define WLANTL_LLC_TDLS_TYPE             0x890d
@@ -576,7 +577,7 @@ typedef struct
   v_U8_t                        ucMPDUHeaderLen;
 
   /* Enabled ACs currently serviced by TL (automatic setup in TL)*/
-  v_U8_t                        aucACMask[WLANTL_MAX_AC];
+  v_U8_t                        aucACMask[WLANTL_NUM_TX_QUEUES];
 
   /* Current AC to be retrieved */
   WLANTL_ACEnumType             ucCurrentAC;
@@ -693,6 +694,8 @@ typedef struct
 
   WLANTL_InterfaceStatsType         interfaceStats;
 #endif
+  /* BD Rate for transmitting ARP packets */
+  v_U8_t arpRate;
 }WLANTL_STAClientType;
 
 /*---------------------------------------------------------------------------

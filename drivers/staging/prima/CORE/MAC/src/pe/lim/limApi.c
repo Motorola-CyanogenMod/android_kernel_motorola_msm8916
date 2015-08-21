@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -40,7 +40,7 @@
  *
  */
 #include "palTypes.h"
-#include "wniCfgSta.h"
+#include "wniCfg.h"
 #include "wniApi.h"
 #include "sirCommon.h"
 #include "sirDebug.h"
@@ -1063,6 +1063,7 @@ tSirRetStatus peOpen(tpAniSirGlobal pMac, tMacOpenParameters *pMacOpenParam)
     }
     pMac->lim.deauthMsgCnt = 0;
     pMac->lim.retryPacketCnt = 0;
+    pMac->lim.gLimIbssRetryCnt = 0;
 
     /*
      * peOpen is successful by now, so it is right time to initialize
@@ -1450,6 +1451,11 @@ VOS_STATUS peHandleMgmtFrame( v_PVOID_t pvosGCtx, v_PVOID_t vosBuff)
                                                   mHdr->fc.subType ))
     {
         vos_pkt_return_packet(pVosPkt);
+
+        /* Decrement gSysBbtPendingMgmtCount if packet
+         * is dropped before posting to LIM
+         */
+        limDecrementPendingMgmtCount(pMac);
         limLog( pMac, LOGW,
                 FL ( "sysBbtProcessMessageCore failed to process SIR_BB_XPORT_MGMT_MSG" ));
         return VOS_STATUS_E_FAILURE;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -53,7 +53,7 @@
 #include "limAssocUtils.h"
 #include "limFT.h"
 #ifdef WLAN_FEATURE_11W
-#include "wniCfgAp.h"
+#include "wniCfg.h"
 #endif
 
 #if defined WLAN_FEATURE_VOWIFI
@@ -2242,6 +2242,17 @@ limSendAssocReqMgmtFrame(tpAniSirGlobal   pMac,
         {
             extractedExtCap.qosMap = 1;
         }
+        /* No need to merge the EXT Cap from Supplicant
+         * if interworkingService is not set, as currently
+         * driver is only interested in interworkingService
+         * capability from supplicant. if in
+         * future any other EXT Cap info is required from
+         * supplicant it needs to be handled here.
+         */
+        else
+        {
+            extractedExtCapFlag = eANI_BOOLEAN_FALSE;
+        }
     }
 
     caps = pMlmAssocReq->capabilityInfo;
@@ -2557,7 +2568,8 @@ limSendAssocReqMgmtFrame(tpAniSirGlobal   pMac,
         txFlag |= HAL_USE_BD_RATE2_FOR_MANAGEMENT_FRAME;
     }
 
-    if(psessionEntry->pePersona == VOS_P2P_CLIENT_MODE)
+    if(psessionEntry->pePersona == VOS_P2P_CLIENT_MODE ||
+       psessionEntry->pePersona == VOS_STA_MODE)
     {
         txFlag |= HAL_USE_PEER_STA_REQUESTED_MASK;
     }
@@ -2571,9 +2583,6 @@ limSendAssocReqMgmtFrame(tpAniSirGlobal   pMac,
     MTRACE(macTrace(pMac, TRACE_CODE_TX_MGMT,
            psessionEntry->peSessionId,
            pMacHdr->fc.subType));
-
-    // enable caching
-    WLANTL_EnableCaching(psessionEntry->staId);
 
     halstatus = halTxFrame( pMac, pPacket, ( tANI_U16 ) (sizeof(tSirMacMgmtHdr) + nPayload),
             HAL_TXRX_FRM_802_11_MGMT,
@@ -2591,6 +2600,9 @@ limSendAssocReqMgmtFrame(tpAniSirGlobal   pMac,
         vos_mem_free(pFrm);
         return;
     }
+
+    //Enable caching only if Assoc Request is successfully submitted to the h/w
+    WLANTL_EnableCaching(psessionEntry->staId);
 
     // Free up buffer allocated for mlmAssocReq
     vos_mem_free(pMlmAssocReq);
@@ -3013,10 +3025,6 @@ limSendReassocReqWithFTIEsMgmtFrame(tpAniSirGlobal     pMac,
        psessionEntry->assocReqLen = (ft_ies_length);
     }
 
-
-    // Enable TL cahching in case of roaming
-    WLANTL_EnableCaching(psessionEntry->staId);
-
     MTRACE(macTrace(pMac, TRACE_CODE_TX_MGMT,
            psessionEntry->peSessionId,
            pMacHdr->fc.subType));
@@ -3037,6 +3045,9 @@ limSendReassocReqWithFTIEsMgmtFrame(tpAniSirGlobal     pMac,
         goto end;
     }
 
+    // Enable TL cahching in case of roaming
+    WLANTL_EnableCaching(psessionEntry->staId);
+
 end:
     // Free up buffer allocated for mlmAssocReq
     vos_mem_free( pMlmReassocReq );
@@ -3050,6 +3061,15 @@ void limSendRetryReassocReqFrame(tpAniSirGlobal     pMac,
 {
     tLimMlmReassocCnf       mlmReassocCnf; // keep sme
     tLimMlmReassocReq       *pTmpMlmReassocReq = NULL;
+#ifdef FEATURE_WLAN_ESE
+    tANI_U32                val=0;
+#endif
+    if (pMlmReassocReq == NULL)
+    {
+        limLog(pMac, LOGE,
+           FL("Invalid pMlmReassocReq"));
+        goto end;
+    }
     if(NULL == pTmpMlmReassocReq)
     {
         pTmpMlmReassocReq = vos_mem_malloc(sizeof(tLimMlmReassocReq));
@@ -3060,6 +3080,31 @@ void limSendRetryReassocReqFrame(tpAniSirGlobal     pMac,
 
     // Prepare and send Reassociation request frame
     // start reassoc timer.
+#ifdef FEATURE_WLAN_ESE
+    /*
+     * In case of Ese Reassociation, change the reassoc timer
+     * value.
+     */
+    val = pMlmReassocReq->reassocFailureTimeout;
+    if (psessionEntry->isESEconnection)
+    {
+        val = val/LIM_MAX_REASSOC_RETRY_LIMIT;
+    }
+    if (tx_timer_deactivate(&pMac->lim.limTimers.gLimReassocFailureTimer) !=
+                                                TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+           FL("unable to deactivate Reassoc failure timer"));
+    }
+    val = SYS_MS_TO_TICKS(val);
+    if (tx_timer_change(&pMac->lim.limTimers.gLimReassocFailureTimer,
+                                val, 0) != TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+          FL("unable to change Reassociation failure timer"));
+    }
+#endif
+
     pMac->lim.limTimers.gLimReassocFailureTimer.sessionId = psessionEntry->peSessionId;
     // Start reassociation failure timer
     MTRACE(macTrace(pMac, TRACE_CODE_TIMER_ACTIVATE, psessionEntry->peSessionId, eLIM_REASSOC_FAIL_TIMER));
@@ -3380,7 +3425,8 @@ limSendReassocReqMgmtFrame(tpAniSirGlobal     pMac,
         txFlag |= HAL_USE_BD_RATE2_FOR_MANAGEMENT_FRAME;
     }
 
-    if(psessionEntry->pePersona == VOS_P2P_CLIENT_MODE)
+    if(psessionEntry->pePersona == VOS_P2P_CLIENT_MODE ||
+       psessionEntry->pePersona == VOS_STA_MODE)
     {
         txFlag |= HAL_USE_PEER_STA_REQUESTED_MASK;
     }
@@ -3388,9 +3434,6 @@ limSendReassocReqMgmtFrame(tpAniSirGlobal     pMac,
     MTRACE(macTrace(pMac, TRACE_CODE_TX_MGMT,
            psessionEntry->peSessionId,
            pMacHdr->fc.subType));
-
-    // enable caching
-    WLANTL_EnableCaching(psessionEntry->staId);
 
     halstatus = halTxFrame( pMac, pPacket, ( tANI_U16 ) (sizeof(tSirMacMgmtHdr) + nPayload),
                             HAL_TXRX_FRM_802_11_MGMT,
@@ -3408,6 +3451,9 @@ limSendReassocReqMgmtFrame(tpAniSirGlobal     pMac,
         //Pkt will be freed up by the callback
         goto end;
     }
+
+    // enable caching
+    WLANTL_EnableCaching(psessionEntry->staId);
 
 end:
     // Free up buffer allocated for mlmAssocReq
@@ -3708,7 +3754,8 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
         txFlag |= HAL_USE_BD_RATE2_FOR_MANAGEMENT_FRAME;
     }
 
-    if(psessionEntry->pePersona == VOS_P2P_CLIENT_MODE)
+    if(psessionEntry->pePersona == VOS_P2P_CLIENT_MODE ||
+       psessionEntry->pePersona == VOS_STA_MODE)
     {
         txFlag |= HAL_USE_PEER_STA_REQUESTED_MASK;
     }
@@ -4060,12 +4107,7 @@ limSendDisassocMgmtFrame(tpAniSirGlobal pMac,
         txFlag |= HAL_USE_BD_RATE2_FOR_MANAGEMENT_FRAME;
     }
 
-    if((psessionEntry->pePersona == VOS_P2P_CLIENT_MODE) ||
-       (psessionEntry->pePersona == VOS_P2P_GO_MODE) ||
-       (psessionEntry->pePersona == VOS_STA_SAP_MODE))
-    {
-        txFlag |= HAL_USE_PEER_STA_REQUESTED_MASK;
-    }
+    txFlag |= HAL_USE_PEER_STA_REQUESTED_MASK;
 
     if( IS_FW_IN_TX_PATH_FEATURE_ENABLE )
     {
@@ -4268,12 +4310,7 @@ limSendDeauthMgmtFrame(tpAniSirGlobal pMac,
         txFlag |= HAL_USE_BD_RATE2_FOR_MANAGEMENT_FRAME;
     }
 
-    if((psessionEntry->pePersona == VOS_P2P_CLIENT_MODE) ||
-       (psessionEntry->pePersona == VOS_P2P_GO_MODE) ||
-       (psessionEntry->pePersona == VOS_STA_SAP_MODE))
-    {
-        txFlag |= HAL_USE_PEER_STA_REQUESTED_MASK;
-    }
+    txFlag |= HAL_USE_PEER_STA_REQUESTED_MASK;
 
     if( IS_FW_IN_TX_PATH_FEATURE_ENABLE )
     {

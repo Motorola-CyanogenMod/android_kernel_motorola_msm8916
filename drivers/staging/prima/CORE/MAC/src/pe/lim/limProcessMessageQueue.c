@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -44,7 +44,7 @@
 #include "wlan_qct_pal_packet.h"
 #include "wlan_qct_wda.h"
 
-#include "wniCfgSta.h"
+#include "wniCfg.h"
 #include "cfgApi.h"
 #include "sirCommon.h"
 #include "utilsApi.h"
@@ -1245,17 +1245,6 @@ static tANI_BOOLEAN limAgeOutProbeReq( tpAniSirGlobal pMac, tpSirMsgQ  limMsg,
     return match;
 }
 
-void limDecrementPendingMgmtCount (tpAniSirGlobal pMac)
-{
-    if( pMac->sys.gSysBbtPendingMgmtCount )
-    {
-         vos_spin_lock_acquire( &pMac->sys.lock );
-         pMac->sys.gSysBbtPendingMgmtCount--;
-         vos_spin_lock_release( &pMac->sys.lock );
-    }
-    else
-         limLog(pMac, LOGW, FL("Pending Management count going negative"));
-}
 /**
  * limProcessMessages
  *

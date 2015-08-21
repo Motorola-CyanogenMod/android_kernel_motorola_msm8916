@@ -3599,6 +3599,13 @@ typedef struct sSirSmeDelStaSelfRsp
     tSirMacAddr     selfMacAddr;
 }tSirSmeDelStaSelfRsp, *tpSirSmeDelStaSelfRsp;
 
+typedef enum DFSChanScanType
+{
+    DFS_CHNL_SCAN_DISABLED,
+    DFS_CHNL_SCAN_ENABLED_NORMAL,
+    DFS_CHNL_SCAN_ENABLED_ACTIVE
+}eDFSChanScanType;
+
 /* Coex Indication defines - 
    should match WLAN_COEX_IND_DATA_SIZE 
    should match WLAN_COEX_IND_TYPE_DISABLE_HB_MONITOR 
@@ -3740,14 +3747,14 @@ typedef struct sSirPNOScanReq
   void                *callbackContext;
   eSirPNOMode         modePNO;
   tANI_U8             ucNetworksCount; 
-  tSirNetworkType     aNetworks[SIR_PNO_MAX_SUPP_NETWORKS];
+  tSirNetworkType     *aNetworks;
   tSirScanTimersType  scanTimers;
   
   /*added by SME*/
   tANI_U16  us24GProbeTemplateLen; 
-  tANI_U8   p24GProbeTemplate[SIR_PNO_MAX_PB_REQ_SIZE];
+  tANI_U8   *p24GProbeTemplate;
   tANI_U16  us5GProbeTemplateLen; 
-  tANI_U8   p5GProbeTemplate[SIR_PNO_MAX_PB_REQ_SIZE]; 
+  tANI_U8   *p5GProbeTemplate;
 } tSirPNOScanReq, *tpSirPNOScanReq;
 
 typedef struct sSirSetRSSIFilterReq
@@ -3951,14 +3958,6 @@ typedef struct sSirRcvPktFilterCfg
   tSirRcvPktFilterFieldParams     paramsData[SIR_MAX_NUM_TESTS_PER_FILTER];
 }tSirRcvPktFilterCfgType, *tpSirRcvPktFilterCfgType;
 
-// IKJB42MAIN-1244, Motorola, a19091 - BEGIN
-typedef struct sSirInvokeV6Filter
-{
-    int (*configureFilterFn)(void *pAdapter, v_U8_t set, v_U8_t userSet);
-    void *pHddAdapter;
-    v_U8_t set;
-}tSirInvokeV6Filter;
-// IKJB42MAIN-1244, Motorola, a19091 - END
 //
 // Filter Packet Match Count Parameters
 //
@@ -5502,5 +5501,12 @@ typedef struct
     tANI_U16       length;
     tSirMacAddr    macAddr;
 } tSirSpoofMacAddrReq, *tpSirSpoofMacAddrReq;
+
+typedef enum eSirAbortScanStatus
+{
+    eSIR_ABORT_ACTIVE_SCAN_LIST_EMPTY,
+    eSIR_ABORT_ACTIVE_SCAN_LIST_NOT_EMPTY,
+    eSIR_ABORT_SCAN_FAILURE
+}tSirAbortScanStatus;
 
 #endif /* __SIR_API_H */

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -229,6 +229,7 @@ typedef struct tagSmeCmd
 #ifdef FEATURE_WLAN_TDLS
         tTdlsCmd  tdlsCmd;
 #endif
+        tSirPNOScanReq pnoInfo;
     }u;
 }tSmeCmd;
 
@@ -274,6 +275,17 @@ void csrAbortCommand( tpAniSirGlobal pMac, tSmeCmd *pCommand, tANI_BOOLEAN fStop
 
 eHalStatus sme_AcquireGlobalLock( tSmeStruct *psSme);
 eHalStatus sme_ReleaseGlobalLock( tSmeStruct *psSme);
+
+/* ---------------------------------------------------------------------------
+    \fn sme_SetCfgScanControlList
+    \brief  API to set Scan Control List
+    \param  hHal - The handle returned by macOpen.
+    \param  countryCode -  Pointer to the countryCode
+    \param  pChannelList -  Pointer to the valid channel list
+    \return eHalStatus
+  ---------------------------------------------------------------------------*/
+eHalStatus sme_SetCfgScanControlList(tHalHandle hHal, tANI_U8 *countryCode,
+                                                    tCsrChannel *pChannelList);
 
 #ifdef FEATURE_OEM_DATA_SUPPORT
 eHalStatus oemData_ProcessOemDataReqCommand(tpAniSirGlobal pMac, tSmeCmd *pCommand);

@@ -1260,7 +1260,7 @@ static void hdd_conf_suspend_ind(hdd_context_t* pHddCtx,
          * function takes care of checking necessary conditions before
          * configuring.
          */
-        //wlan_hdd_set_mc_addr_list(pAdapter, TRUE);
+        wlan_hdd_set_mc_addr_list(pAdapter, TRUE);
 #endif
 
         if( (pHddCtx->cfg_ini->fEnableMCAddrList) && WDA_IS_MCAST_FLT_ENABLE_IN_FW)
@@ -1335,7 +1335,7 @@ static void hdd_conf_resume_ind(hdd_adapter_t *pAdapter)
     /* Filer was applied during suspend inditication
      * clear it when we resume.
      */
-    //wlan_hdd_set_mc_addr_list(pAdapter, FALSE);
+    wlan_hdd_set_mc_addr_list(pAdapter, FALSE);
 #endif
 }
 
@@ -2020,6 +2020,9 @@ VOS_STATUS hdd_wlan_re_init(void)
 #ifdef HAVE_WCNSS_CAL_DOWNLOAD
    int              max_retries = 0;
 #endif
+#ifdef HAVE_CBC_DONE
+   int              max_cbc_retries = 0;
+#endif
 #ifdef WLAN_BTAMP_FEATURE
    hdd_config_t     *pConfig = NULL;
    WLANBAP_ConfigType btAmpConfig;
@@ -2037,6 +2040,15 @@ VOS_STATUS hdd_wlan_re_init(void)
    if (max_retries >= 10) {
       hddLog(VOS_TRACE_LEVEL_FATAL,"%s: WCNSS driver not ready", __func__);
       goto err_re_init;
+   }
+#endif
+
+#ifdef HAVE_CBC_DONE
+   while (!wcnss_cbc_complete() && 20 >= ++max_cbc_retries) {
+       msleep(1000);
+   }
+   if (max_cbc_retries >= 20) {
+      hddLog(VOS_TRACE_LEVEL_FATAL, "%s:CBC not completed", __func__);
    }
 #endif
 

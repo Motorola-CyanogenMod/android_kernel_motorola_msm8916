@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -108,11 +108,6 @@ v_U8_t ccpRSNOui08[ HDD_RSN_OUI_SIZE ] = { 0x00, 0x0F, 0xAC, 0x05 };
 #endif
 
 #define BEACON_FRAME_IES_OFFSET 12
-
-
-#ifdef WLAN_FEATURE_PACKET_FILTERING
-extern int wlan_hdd_update_v6_filters(hdd_adapter_t *pAdapter, v_U8_t set); // IKJB42MAIN-1244, Motorola, a19091
-#endif
 
 #ifdef WLAN_FEATURE_11W
 void hdd_indicateUnprotMgmtFrame(hdd_adapter_t *pAdapter,
@@ -892,6 +887,15 @@ static eHalStatus hdd_DisConnectHandler( hdd_adapter_t *pAdapter, tCsrRoamInfo *
                    cfg80211_disconnected(dev, WLAN_REASON_UNSPECIFIED, NULL, 0, GFP_KERNEL);
                }
             }
+            if ((TRUE == pHddCtx->cfg_ini->fEnableTDLSSupport) &&
+                          (TRUE == sme_IsFeatureSupportedByFW(TDLS))) {
+                if (pAdapter->device_mode != WLAN_HDD_INFRA_STATION)
+                    /* Enable TDLS support Once P2P session ends since
+                     * upond detection of concurrency TDLS would be disabled
+                     */
+                    wlan_hdd_tdls_set_mode(pHddCtx, eTDLS_SUPPORT_ENABLED,
+                                                                     FALSE);
+            }
             //If the Device Mode is Station
             // and the P2P Client is Connected
             //Enable BMPS
@@ -933,39 +937,70 @@ static eHalStatus hdd_DisConnectHandler( hdd_adapter_t *pAdapter, tCsrRoamInfo *
 
     if (eCSR_ROAM_IBSS_LEAVE == roamStatus)
     {
+        v_U8_t i;
+
         sta_id = IBSS_BROADCAST_STAID;
         vstatus = hdd_roamDeregisterSTA( pAdapter, sta_id );
         if ( !VOS_IS_STATUS_SUCCESS(vstatus ) )
         {
             VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
-                     "hdd_roamDeregisterSTA() failed to for staID %d.  "
-                     "Status= %d [0x%x]",
+                    FL("hdd_roamDeregisterSTA() failed to for staID %d.  "
+                     "Status= %d [0x%x]"),
                      sta_id, status, status );
 
             status = eHAL_STATUS_FAILURE;
         }
-
         pHddCtx->sta_to_adapter[sta_id] = NULL;
 
+        /*Clear all the peer sta register with TL.*/
+        for (i =0; i < HDD_MAX_NUM_IBSS_STA; i++ )
+        {
+            if (0 != pHddStaCtx->conn_info.staId[i])
+            {
+               sta_id = pHddStaCtx->conn_info.staId[i];
+
+               VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
+                     FL("Deregister StaID %d"),sta_id);
+               vstatus = hdd_roamDeregisterSTA( pAdapter, sta_id );
+               if ( !VOS_IS_STATUS_SUCCESS(vstatus ) )
+               {
+                   VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                     FL("hdd_roamDeregisterSTA() failed to for staID %d.  "
+                      "Status= %d [0x%x]"),
+                       sta_id, status, status );
+                   status = eHAL_STATUS_FAILURE;
+               }
+
+               /*set the staid and peer mac as 0, all other reset are
+                * done in hdd_connRemoveConnectInfo.
+                */
+               pHddStaCtx->conn_info.staId[i]= 0;
+               vos_mem_zero( &pHddStaCtx->conn_info.peerMacAddress[i], sizeof( v_MACADDR_t ) );
+
+               if (sta_id < (WLAN_MAX_STA_COUNT + 3))
+                    pHddCtx->sta_to_adapter[sta_id] = NULL;
+            }
+        }
+
     }
-
-
-    sta_id = pHddStaCtx->conn_info.staId[0];
-
-    //We should clear all sta register with TL, for now, only one.
-    vstatus = hdd_roamDeregisterSTA( pAdapter, sta_id );
-    if ( !VOS_IS_STATUS_SUCCESS(vstatus ) )
+    else
     {
-        VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
-                  "hdd_roamDeregisterSTA() failed to for staID %d.  "
-                  "Status= %d [0x%x]",
+       sta_id = pHddStaCtx->conn_info.staId[0];
+
+       //We should clear all sta register with TL, for now, only one.
+       vstatus = hdd_roamDeregisterSTA( pAdapter, sta_id );
+       if ( !VOS_IS_STATUS_SUCCESS(vstatus ) )
+       {
+           VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                  FL("hdd_roamDeregisterSTA() failed to for staID %d.  "
+                  "Status= %d [0x%x]"),
                   sta_id, status, status );
 
-        status = eHAL_STATUS_FAILURE;
+           status = eHAL_STATUS_FAILURE;
+       }
+
+       pHddCtx->sta_to_adapter[sta_id] = NULL;
     }
-
-    pHddCtx->sta_to_adapter[sta_id] = NULL;
-
     // Clear saved connection information in HDD
     hdd_connRemoveConnectInfo( pHddStaCtx );
     VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
@@ -993,6 +1028,56 @@ static eHalStatus hdd_DisConnectHandler( hdd_adapter_t *pAdapter, tCsrRoamInfo *
     complete(&pAdapter->disconnect_comp_var);
     return( status );
 }
+
+static void hdd_postTLPacketPendingInd(hdd_adapter_t *pAdapter,
+                                       v_U8_t staId)
+{
+    hdd_context_t *pHddCtx = WLAN_HDD_GET_CTX(pAdapter);
+    v_SINT_t i;
+    v_SIZE_t size;
+    VOS_STATUS status;
+    v_BOOL_t granted = VOS_FALSE;
+
+    if ((pAdapter->device_mode == WLAN_HDD_INFRA_STATION) ||
+        (pAdapter->device_mode == WLAN_HDD_P2P_CLIENT) ||
+        (pAdapter->device_mode == WLAN_HDD_P2P_DEVICE))
+    {
+        //Indicate to TL that there is pending data if a queue is non empty
+        for (i = WLANTL_AC_HIGH_PRIO; i>=0; --i)
+        {
+            size = 0;
+            hdd_list_size(&pAdapter->wmm_tx_queue[i], &size);
+            if (size > 0)
+            {
+               if (i != WLANTL_AC_HIGH_PRIO)
+               {
+                  if (VOS_FALSE ==
+                      pAdapter->hddWmmStatus.wmmAcStatus[i].wmmAcAccessAllowed)
+                  {
+                     hdd_wmm_acquire_access(pAdapter,
+                                           (WLANTL_ACEnumType)i, &granted);
+                     pAdapter->psbChanged |= (1 << i);
+                  }
+                  else
+                     granted = VOS_TRUE;
+               }
+
+               if (granted || (i == WLANTL_AC_HIGH_PRIO))
+               {
+                  status = WLANTL_STAPktPending(pHddCtx->pvosContext,
+                                                staId, (WLANTL_ACEnumType)i);
+                  if (!VOS_IS_STATUS_SUCCESS(status))
+                  {
+                     VOS_TRACE(VOS_MODULE_ID_TL, VOS_TRACE_LEVEL_INFO_HIGH,
+                               "%s: Failure in indicating pkt to TL for QID=%d",
+                               __func__, i);
+                  }
+               }
+            }
+        }
+    }
+}
+
 static VOS_STATUS hdd_roamRegisterSTA( hdd_adapter_t *pAdapter,
                                        tCsrRoamInfo *pRoamInfo,
                                        v_U8_t staId,
@@ -1149,6 +1234,8 @@ static VOS_STATUS hdd_roamRegisterSTA( hdd_adapter_t *pAdapter,
                                          WLANTL_STA_AUTHENTICATED );
 
       pHddStaCtx->conn_info.uIsAuthenticated = VOS_TRUE;
+
+      hdd_postTLPacketPendingInd(pAdapter, staDesc.ucSTAId);
    }
    else
    {
@@ -1290,10 +1377,6 @@ static eHalStatus hdd_AssociationCompletionHandler( hdd_adapter_t *pAdapter, tCs
             pAdapter->wapi_info.fIsWapiSta = 0;
         }
 #endif  /* FEATURE_WLAN_WAPI */
-
-        // IKJB42MAIN-1244, Motorola, a19091 - START
-        wlan_hdd_update_v6_filters(pAdapter, (pAdapter->mc_addr_list.mc_cnt==0)?1:0);
-        // IKJB42MAIN-1244, Motorola, a19091 - END
 
         // indicate 'connect' status to userspace
         hdd_SendAssociationEvent(dev,pRoamInfo);
@@ -1552,6 +1635,8 @@ static eHalStatus hdd_AssociationCompletionHandler( hdd_adapter_t *pAdapter, tCs
                                                    pHddStaCtx->conn_info.staId[ 0 ],
                                                    WLANTL_STA_AUTHENTICATED );
                 pHddStaCtx->conn_info.uIsAuthenticated = VOS_TRUE;
+                hdd_postTLPacketPendingInd(pAdapter,
+                                           pHddStaCtx->conn_info.staId[0]);
             }
         }
 
@@ -1681,12 +1766,23 @@ static eHalStatus hdd_AssociationCompletionHandler( hdd_adapter_t *pAdapter, tCs
             }
             else
             {
-                if (pRoamInfo)
+                if (pRoamInfo){
+                    eCsrAuthType authType =
+                        pWextState->roamProfile.AuthType.authType[0];
+                    v_BOOL_t isWep = (authType == eCSR_AUTH_TYPE_OPEN_SYSTEM) ||
+                                     (authType == eCSR_AUTH_TYPE_SHARED_KEY);
+
+                     /* In case of OPEN-WEP or SHARED-WEP authentication,
+                     * send exact protocol reason code. This enables user
+                     * applications to reconnect the station with correct
+                     * configuration.
+                     */
                     cfg80211_connect_result ( dev, pRoamInfo->bssid,
                         NULL, 0, NULL, 0,
+                        isWep ? pRoamInfo->reasonCode :
                         WLAN_STATUS_UNSPECIFIED_FAILURE,
                         GFP_KERNEL );
-                else
+              } else
                     cfg80211_connect_result ( dev, pWextState->req_bssId,
                         NULL, 0, NULL, 0,
                         WLAN_STATUS_UNSPECIFIED_FAILURE,
@@ -2048,6 +2144,7 @@ static eHalStatus hdd_RoamSetKeyCompleteHandler( hdd_adapter_t *pAdapter, tCsrRo
    VOS_STATUS vosStatus    = VOS_STATUS_E_FAILURE;
    hdd_context_t *pHddCtx = WLAN_HDD_GET_CTX(pAdapter);
    hdd_station_ctx_t *pHddStaCtx = WLAN_HDD_GET_STATION_CTX_PTR(pAdapter);
+   WLANTL_STAStateType prevTLState = WLANTL_STA_INIT;
    ENTER();
 
    if (NULL == pRoamInfo)
@@ -2104,9 +2201,13 @@ static eHalStatus hdd_RoamSetKeyCompleteHandler( hdd_adapter_t *pAdapter, tCsrRo
          if ( ( eCSR_ROAM_RESULT_AUTHENTICATED == roamResult ) &&
              (pRoamInfo != NULL) && !pRoamInfo->fAuthRequired )
          {
-            VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_MED, "Key set "
-                       "for StaId= %d.  Changing TL state to AUTHENTICATED",
-                       pHddStaCtx->conn_info.staId[ 0 ] );
+            WLANTL_GetSTAState(pHddCtx->pvosContext,
+                               pHddStaCtx->conn_info.staId[0],
+                               &prevTLState);
+
+            VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_MED, "Key set "
+                      "for StaId=%d. Changing TL state to AUTHENTICATED from"
+                      " state:%d", pHddStaCtx->conn_info.staId[0], prevTLState);
 
             // Connections that do not need Upper layer authentication,
             // transition TL to 'Authenticated' state after the keys are set.
@@ -2115,6 +2216,10 @@ static eHalStatus hdd_RoamSetKeyCompleteHandler( hdd_adapter_t *pAdapter, tCsrRo
                                                WLANTL_STA_AUTHENTICATED );
 
             pHddStaCtx->conn_info.uIsAuthenticated = VOS_TRUE;
+
+            if (WLANTL_STA_AUTHENTICATED != prevTLState)
+                hdd_postTLPacketPendingInd(pAdapter,
+                                           pHddStaCtx->conn_info.staId[0]);
             //Need to call offload because when roaming happen at that time fwr
             //clean offload info as part of the DelBss
             // No need to configure offload if host was not suspended
@@ -2772,23 +2877,21 @@ eHalStatus hdd_smeRoamCallback( void *pContext, tCsrRoamInfo *pRoamInfo, tANI_U3
                 vos_record_roam_event(e_HDD_DISABLE_TX_QUEUE, NULL, 0);
 #endif
                 /*
-                 * Deregister for this STA with TL with the objective to flush
-                 * all the packets for this STA from wmm_tx_queue. If not done here,
-                 * we would run into a race condition (CR390567) wherein TX
-                 * thread would schedule packets from wmm_tx_queue AFTER peer STA has
-                 * been deleted. And, these packets get assigned with a STA idx of
-                 * self-sta (since the peer STA has been deleted) and get transmitted
-                 * on the new channel before the reassoc request. Since there will be
-                 * no ACK on the new channel, each packet gets retransmitted which
-                 * takes several seconds before the transmission of reassoc request.
-                 * This leads to reassoc-timeout and roam failure.
+                 * Deregister this STA with TL, but do not flush the packets
+                 * for this STA from wmm_tx_queue. Since there is no valid STA
+                 * for these packets they will not be transmitted. Eventually
+                 * after the reassociation is successful, these packets will be
+                 * transmitted after registering STA with TL again. This ensures
+                 * that driver does not drop packets during roaming.
                  */
-                status = hdd_roamDeregisterSTA( pAdapter, pHddStaCtx->conn_info.staId [0] );
-                if ( !VOS_IS_STATUS_SUCCESS(status ) )
+                status = WLANTL_ClearSTAClient((WLAN_HDD_GET_CTX(pAdapter))->pvosContext,
+                                               pHddStaCtx->conn_info.staId[0]);
+                if (!VOS_IS_STATUS_SUCCESS(status))
                 {
-                    VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_WARN,
-                            FL("hdd_roamDeregisterSTA() failed to for staID %d.  Status= %d [0x%x]"),
-                            pHddStaCtx->conn_info.staId[0], status, status );
+                    VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                              FL("WLANTL_ClearSTAClient failed for staID %d."
+                              "Status= %d [0x%x]"), pHddStaCtx->conn_info.staId[0],
+                              status, status);
                     halStatus = eHAL_STATUS_FAILURE;
                 }
             }

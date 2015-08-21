@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -72,8 +72,11 @@
 /** Number of attempts to detect/remove card */
 #define LIBRA_CARD_INSERT_DETECT_MAX_COUNT      5
 #define LIBRA_CARD_REMOVE_DETECT_MAX_COUNT      5
-/** Number of Tx Queues */  
-#define NUM_TX_QUEUES 4
+
+/** Number of Tx Queues. This should be same as the one
+ *  used in TL WLANTL_NUM_TX_QUEUES */
+#define NUM_TX_QUEUES 5
+
 /** HDD's internal Tx Queue Length. Needs to be a power of 2 */
 #define HDD_TX_QUEUE_MAX_LEN 128
 /** HDD internal Tx Queue Low Watermark. Net Device TX queue is disabled
@@ -209,7 +212,7 @@
 #define HDD_PNO_SCAN_TIMERS_SET_ONE      1
 /* value should not be greater than PNO_MAX_SCAN_TIMERS */
 #define HDD_PNO_SCAN_TIMERS_SET_MULTIPLE 6
-#define WLAN_WAIT_TIME_PNO  500
+#define WLAN_WAIT_TIME_PNO  2000
 #endif
 
 #define MAX_USER_COMMAND_SIZE 4096
@@ -810,7 +813,6 @@ typedef struct hdd_scaninfo_s
 /* Changing value from 10 to 240, as later is
    supported by wcnss */
 #define WLAN_HDD_MAX_MC_ADDR_LIST 240
-#define WLAN_HDD_MAX_FILTER_SLOTS 10
 
 #ifdef WLAN_FEATURE_PACKET_FILTERING
 typedef struct multicast_addr_list
@@ -818,7 +820,6 @@ typedef struct multicast_addr_list
    v_U8_t isFilterApplied;
    v_U8_t mc_cnt;
    v_U8_t addr[WLAN_HDD_MAX_MC_ADDR_LIST][ETH_ALEN];
-   v_U8_t filter_index[WLAN_HDD_MAX_MC_ADDR_LIST]; // IKJB42MAIN-1244, Motorola, a19091
 } t_multicast_add_list;
 #endif
 
@@ -1014,13 +1015,6 @@ struct hdd_adapter_s
    hdd_cfg80211_state_t cfg80211State;
 
 #ifdef WLAN_FEATURE_PACKET_FILTERING
-   // IKJB42MAIN-1244, Motorola, a19091 - START
-   v_U32_t user_filter_config;
-   v_U32_t driver_filter_config;
-   v_U8_t ipv6_user_set_map : 4;
-   v_U8_t ipv6_code_set_map : 4;
-   v_SCHAR_t filter_v6_index;
-   // IKJB42MAIN-1244, Motorola, a19091 - END
    t_multicast_add_list mc_addr_list;
 #endif
 
@@ -1080,6 +1074,12 @@ struct hdd_adapter_s
    spinlock_t lock_for_active_session;
    /* Time stamp for start RoC request */
    v_TIME_t startRocTs;
+
+   /* Time stamp for last completed RoC request */
+   v_TIME_t lastRocTs;
+
+   /* work queue to defer the back to back p2p_listen */
+   struct delayed_work roc_work;
 };
 
 #define WLAN_HDD_GET_STATION_CTX_PTR(pAdapter) (&(pAdapter)->sessionCtx.station)
@@ -1355,6 +1355,8 @@ struct hdd_context_s
      * IP
      */
     struct notifier_block ipv4_notifier;
+    //Lock to avoid race condition during wmm operations
+    struct mutex   wmmLock;
 };
 
 
@@ -1420,8 +1422,9 @@ void wlan_hdd_enable_deepsleep(v_VOID_t * pVosContext);
 v_BOOL_t wlan_hdd_is_GO_power_collapse_allowed(hdd_context_t* pHddCtx);
 v_BOOL_t hdd_is_apps_power_collapse_allowed(hdd_context_t* pHddCtx);
 v_BOOL_t hdd_is_suspend_notify_allowed(hdd_context_t* pHddCtx);
-void hdd_abort_mac_scan(hdd_context_t* pHddCtx, tANI_U8 sessionId,
-                        eCsrAbortReason reason);
+tSirAbortScanStatus hdd_abort_mac_scan(hdd_context_t* pHddCtx,
+                                       tANI_U8 sessionId,
+                                       eCsrAbortReason reason);
 void wlan_hdd_set_monitor_tx_adapter( hdd_context_t *pHddCtx, hdd_adapter_t *pAdapter );
 void hdd_cleanup_actionframe( hdd_context_t *pHddCtx, hdd_adapter_t *pAdapter );
 
@@ -1438,7 +1441,6 @@ void wlan_hdd_reset_prob_rspies(hdd_adapter_t* pHostapdAdapter);
 void hdd_prevent_suspend(void);
 void hdd_allow_suspend(void);
 void hdd_prevent_suspend_timeout(v_U32_t timeout);
-void hdd_prevent_suspend_after_scan(long hz); //Mot IKHSS7-28961 :Empty scan results
 bool hdd_is_ssr_required(void);
 void hdd_set_ssr_required(e_hdd_ssr_required value);
 
@@ -1453,6 +1455,7 @@ void hdd_reset_pwrparams(hdd_context_t *pHddCtx);
 int wlan_hdd_validate_context(hdd_context_t *pHddCtx);
 v_BOOL_t hdd_is_valid_mac_address(const tANI_U8* pMacAddr);
 VOS_STATUS hdd_issta_p2p_clientconnected(hdd_context_t *pHddCtx);
+VOS_STATUS hdd_is_any_session_connected(hdd_context_t *pHddCtx);
 void hdd_ipv4_notifier_work_queue(struct work_struct *work);
 v_BOOL_t hdd_isConnectionInProgress( hdd_context_t *pHddCtx);
 #ifdef WLAN_FEATURE_PACKET_FILTERING
@@ -1519,5 +1522,7 @@ VOS_STATUS wlan_hdd_init_channels_for_cc(hdd_context_t *pHddCtx,  driver_load_ty
 
 VOS_STATUS wlan_hdd_cancel_remain_on_channel(hdd_context_t *pHddCtx);
 
-void hdd_nullify_netdev_ops(hdd_context_t *pHddCtx);
+VOS_STATUS wlan_hdd_handle_dfs_chan_scan(hdd_context_t *pHddCtx,
+                                   tANI_U8 dfsScanMode);
+
 #endif    // end #if !defined( WLAN_HDD_MAIN_H )
