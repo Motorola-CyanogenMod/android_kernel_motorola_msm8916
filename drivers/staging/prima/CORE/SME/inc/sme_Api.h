@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -38,9 +38,6 @@
   
   \brief prototype for SME APIs
   
-   Copyright 2008 (c) Qualcomm, Incorporated.  All Rights Reserved.
-   
-   Qualcomm Confidential and Proprietary.
   
   ========================================================================*/
 
@@ -59,6 +56,7 @@
 #include "btcApi.h"
 #include "vos_nvitem.h"
 #include "p2p_Api.h"
+#include "smeInternal.h"
 
 #ifdef FEATURE_OEM_DATA_SUPPORT
 #include "oemDataApi.h"
@@ -67,6 +65,7 @@
 #if defined WLAN_FEATURE_VOWIFI
 #include "smeRrmInternal.h"
 #endif
+#include "nan_Api.h"
 
 /*-------------------------------------------------------------------------- 
   Preprocessor definitions and constants
@@ -282,7 +281,13 @@ eHalStatus sme_EXTScanRegisterCallback (tHalHandle hHal,
                           void *);
 
 #endif /* WLAN_FEATURE_EXTSCAN */
-tANI_BOOLEAN  sme_SpoofMacAddrReq(tHalHandle hHal, v_MACADDR_t *macaddr);
+/* ---------------------------------------------------------------------------
+    \fn sme_SpoofMacAddrReq
+    \brief  SME API to send Spoof Mac Addr req to HAL
+    \param  macaddr: mac address to be sent
+    \- return eHalStatus
+    -------------------------------------------------------------------------*/
+eHalStatus  sme_SpoofMacAddrReq(tHalHandle hHal, v_MACADDR_t *macaddr);
 
 typedef enum
 {
@@ -335,6 +340,21 @@ eHalStatus sme_Open(tHalHandle hHal);
   
   --------------------------------------------------------------------------*/
 eHalStatus sme_Close(tHalHandle hHal);
+
+/*--------------------------------------------------------------------------
+
+  \brief sme_PreClose() - Stop SME resources prior to final sme_Stop.
+
+  The function stops resources in SME, PMC, CCM, CSR, etc. as needed
+  to handle fast closure during SSR/unload-load cases.
+
+  \param hHal - The handle returned by macOpen.
+  \return v_VOID_t
+
+  \sa
+
+  --------------------------------------------------------------------------*/
+v_VOID_t sme_PreClose(tHalHandle hHal);
 
 /*--------------------------------------------------------------------------
   
@@ -2138,6 +2158,35 @@ eHalStatus sme_RegisterMgmtFrame(tHalHandle hHal, tANI_U8 sessionId,
   -------------------------------------------------------------------------------*/
 eHalStatus sme_DeregisterMgmtFrame(tHalHandle hHal, tANI_U8 sessionId, 
                      tANI_U16 frameType, tANI_U8* matchData, tANI_U16 matchLen);
+/* ---------------------------------------------------------------------------
+    \fn sme_GetFramesLog
+    \brief a wrapper function that client calls to register a callback to get
+           mgmt frames logged
+    \param callback - SME sends back the context using the callback
+    \param flag - flag tells to clear OR send the frame log buffer
+    \param pContext - user context to be passed back along with the callback
+    \return eHalStatus
+  ---------------------------------------------------------------------------*/
+eHalStatus sme_GetFramesLog(tHalHandle hHal,
+                             tGetFrameLogCallback callback,
+                             tANI_U8 flag, void *pContext);
+/* ---------------------------------------------------------------------------
+
+  \fn    sme_InitMgmtFrameLogging
+
+  \brief
+    SME will pass this request to lower mac to initialize Frame Logging.
+
+  \param
+
+    hHal - The handle returned by macOpen.
+
+    wlanFWLoggingInitParam - Params to initialize frame logging
+
+  \return eHalStatus
+--------------------------------------------------------------------------- */
+eHalStatus sme_InitMgmtFrameLogging( tHalHandle hHal,
+                            tpSirFWLoggingInitParam wlanFWLoggingInitParam);
 
 /* ---------------------------------------------------------------------------
 
@@ -3234,19 +3283,6 @@ void sme_SetTdlsPowerSaveProhibited(tHalHandle hHal, v_BOOL_t val);
     -------------------------------------------------------------------------*/
 v_BOOL_t sme_IsPmcBmps(tHalHandle hHal);
 
-#ifdef FEATURE_WLAN_TDLS_INTERNAL
-typedef struct smeTdlsDisResult
-{
-      tSirMacAddr tdlsPeerMac;
-          v_S7_t tdlsPeerRssi;
-} tSmeTdlsDisResult;
-
-VOS_STATUS sme_StartTdlsDiscoveryReq(tHalHandle hHal, tANI_U8 sessionId, tSirMacAddr peerMac);
-v_U8_t sme_GetTdlsDiscoveryResult(tHalHandle hHal,
-                                 tSmeTdlsDisResult *disResult, v_U8_t listType);
-VOS_STATUS sme_StartTdlsLinkSetupReq(tHalHandle hHal, tANI_U8 sessionId, tSirMacAddr peerMac);
-VOS_STATUS sme_StartTdlsLinkTeardownReq(tHalHandle hHal, tANI_U8 sessionId, tSirMacAddr peerMac);
-#endif /* FEATURE_WLAN_TDLS */
 eHalStatus sme_UpdateDfsSetting(tHalHandle hHal, tANI_U8 fUpdateEnableDFSChnlScan);
 
 /* ---------------------------------------------------------------------------
@@ -3439,7 +3475,8 @@ eHalStatus sme_SendRateUpdateInd(tHalHandle hHal, tSirRateUpdateInd *rateUpdateP
 */
 eHalStatus smeIssueFastRoamNeighborAPEvent (tHalHandle hHal,
                                             tANI_U8 *bssid,
-                                            tSmeFastRoamTrigger fastRoamTrig);
+                                            tSmeFastRoamTrigger fastRoamTrig,
+                                            tANI_U8 channel);
 
 eHalStatus sme_RoamDelPMKIDfromCache( tHalHandle hHal, tANI_U8 sessionId,
                                       tANI_U8 *pBSSId,
@@ -3542,15 +3579,30 @@ VOS_STATUS sme_SendTdlsChanSwitchReq(tHalHandle hHal,
                                      tANI_S32 tdlsOffCh,
                                      tANI_S32 tdlsOffChBwOffset,
                                      tANI_U8 tdlsSwMode);
-
+eHalStatus sme_GetFwStats(tHalHandle hHal, tANI_U32 stats,
+                 void *pContext, tSirFWStatsCallback callback);
 void sme_SetMiracastMode (tHalHandle hHal,tANI_U8 mode);
 
 void sme_resetCoexEevent(tHalHandle hHal);
 
 tANI_U32 sme_GetChannelBondingMode5G(tHalHandle hHal);
 tANI_U32 sme_GetChannelBondingMode24G(tHalHandle hHal);
+#ifdef WLAN_FEATURE_AP_HT40_24G
+void sme_UpdateChannelBondingMode24G(tHalHandle hHal,
+                                      tANI_U8 cbMode);
+eHalStatus sme_SetHT2040Mode(tHalHandle hHal,
+                   tANI_U8 sessionId, tANI_U8 cbMode);
+#endif
 
 void sme_disable_dfs_channel(tHalHandle hHal, bool disable_dfs);
+
+/* HDD Callback function */
+typedef void(*pEncryptMsgRSPCb)(void *pUserData, void *infoParam);
+
+eHalStatus sme_Encryptmsgsend (tHalHandle hHal,
+                               u8 *pCmd,
+                               int length,
+                               pEncryptMsgRSPCb encCB);
 
 /* ---------------------------------------------------------------------------
      \fn sme_RegisterBtCoexTDLSCallback
@@ -3568,26 +3620,67 @@ eHalStatus sme_RegisterBtCoexTDLSCallback
 );
 
 /* ---------------------------------------------------------------------------
-    \fn smeNeighborRoamIsHandoffInProgress
+    \fn smeNeighborMiddleOfRoaming
 
-    \brief This function is a wrapper to call csrNeighborRoamIsHandoffInProgress
+    \brief This function is a wrapper to call csrNeighborMiddleOfRoaming
 
     \param hHal - The handle returned by macOpen.
 
     \return eANI_BOOLEAN_TRUE if reassoc in progress,
             eANI_BOOLEAN_FALSE otherwise
 ---------------------------------------------------------------------------*/
-tANI_BOOLEAN smeNeighborRoamIsHandoffInProgress(tHalHandle hHal);
+tANI_BOOLEAN smeNeighborMiddleOfRoaming(tHalHandle hHal);
 
-void sme_SetDefDot11Mode(tHalHandle hHal);
+/* ---------------------------------------------------------------------------
+
+    \fn sme_IsTdlsOffChannelValid
+    \brief To check if the channel is valid for currently established domain
+    This is a synchronous API.
+
+    \param hHal - The handle returned by macOpen.
+    \param channel - channel to verify
+
+    \return TRUE/FALSE, TRUE if channel is valid
+
+  -------------------------------------------------------------------------------*/
+tANI_BOOLEAN sme_IsTdlsOffChannelValid(tHalHandle hHal, tANI_U8 channel);
+
+/* --------------------------------------------------------------------------
+
+    \fn sme_IsCoexScoIndicationSet
+    \brief To check if the BTC module in fwr has sent the SCO
+           indication to host or not
+
+    \param hHal - The handle returned by macOpen.
+    \return TRUE - Sco call in progress FALSE- No SCO call in progress
+
+  --------------------------------------------------------------------------*/
+tANI_BOOLEAN sme_IsCoexScoIndicationSet(tHalHandle hHal);
+
 eHalStatus sme_SetMiracastVendorConfig(tHalHandle hHal,
                                tANI_U32 iniNumBuffAdvert,
                                       tANI_U32 set_value);
 
-eHalStatus sme_SetRtsCtsHtVht(tHalHandle hHal, tANI_U32 set_value);
+void sme_SetDefDot11Mode(tHalHandle hHal);
 
-tANI_BOOLEAN sme_handleSetFccChannel(tHalHandle hHal,
-                                      tANI_U8 fcc_constraint);
+/* ---------------------------------------------------------------------------
+    \fn sme_SetTdls2040BSSCoexistence
+    \brief  API to enable or disable 20_40 BSS Coexistence IE in TDLS frames.
+
+    \param  isEnabled - Enable or Disable.
+    \- return VOS_STATUS_SUCCES
+   -------------------------------------------------------------------------*/
+eHalStatus sme_SetTdls2040BSSCoexistence(tHalHandle hHal, tANI_S32 isEnabled);
+
+/* ---------------------------------------------------------------------------
+    \fn sme_SetRtsCtsHtVht
+    \brief  API to to enable/disable RTS/CTS for different modes.
+
+    \param  set_value - Bit mask value to enable RTS/CTS for different modes.
+    \- return VOS_STATUS_SUCCES if INdication is posted to
+       WDA else return eHAL_STATUS_FAILURE
+    -------------------------------------------------------------------------*/
+eHalStatus sme_SetRtsCtsHtVht(tHalHandle hHal, tANI_U32 set_value);
 
 
 #endif //#if !defined( __SME_API_H )

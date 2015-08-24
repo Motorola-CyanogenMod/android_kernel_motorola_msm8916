@@ -351,6 +351,9 @@ static void __limInitVars(tpAniSirGlobal pMac)
     pMac->lim.gScanInPowersave = 0;
     pMac->lim.probeCounter = 0;
     pMac->lim.maxProbe = 0;
+    pMac->lim.txBdToken = 0;
+
+    pMac->lim.EnableTdls2040BSSCoexIE = 1;
 }
 
 static void __limInitAssocVars(tpAniSirGlobal pMac)
@@ -664,7 +667,7 @@ tSirRetStatus limStart(tpAniSirGlobal pMac)
 {
    tSirResultCodes retCode = eSIR_SUCCESS;
 
-   PELOG1(limLog(pMac, LOG1, FL(" enter"));)
+   limLog(pMac, LOG1, FL(" enter"));
 
    if (pMac->lim.gLimSmeState == eLIM_SME_OFFLINE_STATE)
    {
@@ -857,7 +860,7 @@ limCleanup(tpAniSirGlobal pMac)
     // free up preAuth table
     if (pMac->lim.gLimPreAuthTimerTable.pTable != NULL)
     {
-        vos_mem_free(pMac->lim.gLimPreAuthTimerTable.pTable);
+        vos_mem_vfree(pMac->lim.gLimPreAuthTimerTable.pTable);
         pMac->lim.gLimPreAuthTimerTable.pTable = NULL;
         pMac->lim.gLimPreAuthTimerTable.numEntry = 0;
     }
@@ -999,50 +1002,29 @@ tSirRetStatus peOpen(tpAniSirGlobal pMac, tMacOpenParameters *pMacOpenParam)
          return eSIR_FAILURE;
     }
 
-    pMac->lim.limTimers.gpLimCnfWaitTimer = vos_mem_malloc(sizeof(TX_TIMER) * pMac->lim.maxStation);
+    pMac->lim.limTimers.gpLimCnfWaitTimer = vos_mem_vmalloc(sizeof(TX_TIMER) * pMac->lim.maxStation);
     if (NULL == pMac->lim.limTimers.gpLimCnfWaitTimer)
     {
         PELOGE(limLog(pMac, LOGE, FL("memory allocate failed!"));)
         return eSIR_FAILURE;
     }
 
-#if 0
-    pMac->lim.gpLimAIDpool = vos_mem_malloc(sizeof(*pMac->lim.gpLimAIDpool) * (WNI_CFG_ASSOC_STA_LIMIT_STAMAX+1));
-    if (NULL == pMac->lim.gpLimAIDpool)
-    {
-        PELOGE(limLog(pMac, LOGE, FL("memory allocate failed!"));)
-        return eSIR_FAILURE;
-    }
-#endif
-    pMac->lim.gpSession = vos_mem_malloc(sizeof(tPESession)* pMac->lim.maxBssId);
+    pMac->lim.gpSession = vos_mem_vmalloc(sizeof(tPESession)* pMac->lim.maxBssId);
     if (NULL == pMac->lim.gpSession)
     {
         limLog(pMac, LOGE, FL("memory allocate failed!"));
+        vos_mem_vfree(pMac->lim.limTimers.gpLimCnfWaitTimer);
         return eSIR_FAILURE;
     }
  
     vos_mem_set(pMac->lim.gpSession, sizeof(tPESession)*pMac->lim.maxBssId, 0);
 
-
- /*
-    pMac->dph.dphHashTable.pHashTable = vos_mem_malloc(sizeof(tpDphHashNode)*pMac->lim.maxStation);
-    if (NULL == pMac->dph.dphHashTable.pHashTable)
-    {
-        PELOGE(limLog(pMac, LOGE, FL("memory allocate failed!"));)
-        return eSIR_FAILURE;
-    }
-
-    pMac->dph.dphHashTable.pDphNodeArray = vos_mem_malloc(sizeof(tDphHashNode)*pMac->lim.maxStation);
-    if (NULL == pMac->dph.dphHashTable.pDphNodeArray)
-    {
-        PELOGE(limLog(pMac, LOGE, FL("memory allocate failed!"));)
-        return eSIR_FAILURE;
-    }
-    */
     pMac->pmm.gPmmTim.pTim = vos_mem_malloc(sizeof(tANI_U8)*pMac->lim.maxStation);
     if (NULL == pMac->pmm.gPmmTim.pTim)
     {
         PELOGE(limLog(pMac, LOGE, FL("memory allocate failed for pTim!"));)
+        vos_mem_vfree(pMac->lim.limTimers.gpLimCnfWaitTimer);
+        vos_mem_vfree(pMac->lim.gpSession);
         return eSIR_FAILURE;
     }
     vos_mem_set(pMac->pmm.gPmmTim.pTim, sizeof(tANI_U8)*pMac->lim.maxStation, 0);
@@ -1053,9 +1035,9 @@ tSirRetStatus peOpen(tpAniSirGlobal pMac, tMacOpenParameters *pMacOpenParam)
     if( !VOS_IS_STATUS_SUCCESS( vos_lock_init( &pMac->lim.lkPeGlobalLock ) ) )
     {
         PELOGE(limLog(pMac, LOGE, FL("pe lock init failed!"));)
-        vos_mem_free(pMac->lim.limTimers.gpLimCnfWaitTimer);
+        vos_mem_vfree(pMac->lim.limTimers.gpLimCnfWaitTimer);
         pMac->lim.limTimers.gpLimCnfWaitTimer = NULL;
-        vos_mem_free(pMac->lim.gpSession);
+        vos_mem_vfree(pMac->lim.gpSession);
         pMac->lim.gpSession = NULL;
         vos_mem_free(pMac->pmm.gPmmTim.pTim);
         pMac->pmm.gPmmTim.pTim = NULL;
@@ -1099,21 +1081,11 @@ tSirRetStatus peClose(tpAniSirGlobal pMac)
             peDeleteSession(pMac,&pMac->lim.gpSession[i]);
         }
     }
-    vos_mem_free(pMac->lim.limTimers.gpLimCnfWaitTimer);
+    vos_mem_vfree(pMac->lim.limTimers.gpLimCnfWaitTimer);
     pMac->lim.limTimers.gpLimCnfWaitTimer = NULL;
-#if 0
-    vos_mem_free(pMac->lim.gpLimAIDpool);
-    pMac->lim.gpLimAIDpool = NULL;
-#endif
-    
-    vos_mem_free(pMac->lim.gpSession);
+    vos_mem_vfree(pMac->lim.gpSession);
     pMac->lim.gpSession = NULL;
-    /*
-    vos_mem_free(pMac->dph.dphHashTable.pHashTable);
-    pMac->dph.dphHashTable.pHashTable = NULL;
-    vos_mem_free(pMac->dph.dphHashTable.pDphNodeArray);
-    pMac->dph.dphHashTable.pDphNodeArray = NULL;
-    */
+
     vos_mem_free(pMac->pmm.gPmmTim.pTim);
     pMac->pmm.gPmmTim.pTim = NULL;
     if( !VOS_IS_STATUS_SUCCESS( vos_lock_destroy( &pMac->lim.lkPeGlobalLock ) ) )
@@ -1245,6 +1217,7 @@ tANI_U8 limIsTimerAllowedInPowerSaveState(tpAniSirGlobal pMac, tSirMsgQ *pMsg)
             case SIR_LIM_ASSOC_FAIL_TIMEOUT:
             case SIR_LIM_AUTH_FAIL_TIMEOUT:
             case SIR_LIM_ADDTS_RSP_TIMEOUT:
+            case SIR_LIM_AUTH_RETRY_TIMEOUT:
                 retStatus = TRUE;
                 break;
 
@@ -1409,6 +1382,16 @@ VOS_STATUS peHandleMgmtFrame( v_PVOID_t pvosGCtx, v_PVOID_t vosBuff)
     MTRACE(macTrace(pMac, TRACE_CODE_RX_MGMT, NO_SESSION, 
                         LIM_TRACE_MAKE_RXMGMT(mHdr->fc.subType,  
                         (tANI_U16) (((tANI_U16) (mHdr->seqControl.seqNumHi << 4)) | mHdr->seqControl.seqNumLo)));)
+
+#ifdef WLAN_FEATURE_ROAM_SCAN_OFFLOAD
+       if (WDA_GET_ROAMCANDIDATEIND(pRxPacketInfo))
+           limLog(pMac, LOG1, FL("roamCandidateInd %d"),
+                  WDA_GET_ROAMCANDIDATEIND(pRxPacketInfo));
+
+       if (WDA_GET_OFFLOADSCANLEARN(pRxPacketInfo))
+           limLog(pMac, LOG1, FL("offloadScanLearn %d"),
+                  WDA_GET_OFFLOADSCANLEARN(pRxPacketInfo));
+#endif
     }
 
 
@@ -1761,7 +1744,7 @@ limHandleIBSScoalescing(
         ieLen    = WDA_GET_RX_PAYLOAD_LEN(pRxPacketInfo);
         tsfLater = WDA_GET_RX_TSF_LATER(pRxPacketInfo);
         pIEs = WDA_GET_RX_MPDU_DATA(pRxPacketInfo);
-        PELOG3(limLog(pMac, LOG3, FL("BEFORE Coalescing tsfLater val :%d"), tsfLater);)
+        limLog(pMac, LOG1, FL("BEFORE Coalescing tsfLater val :%d"), tsfLater);
         retCode  = limIbssCoalesce(pMac, pHdr, pBeacon, pIEs, ieLen, tsfLater,psessionEntry);
     }
     return retCode;
@@ -1816,6 +1799,19 @@ tAniBool limEncTypeMatched(tpAniSirGlobal pMac, tpSchBeaconStruct  pBeacon,
             ( (pSession->encryptType == eSIR_ED_TKIP) ||
                 (pSession->encryptType == eSIR_ED_CCMP) ||
                 (pSession->encryptType == eSIR_ED_AES_128_CMAC)))
+        return eSIR_TRUE;
+
+    /* For HS2.0, RSN ie is not present
+     * in beacon. Therefore no need to
+     * check for security type in case
+     * OSEN session.
+     */
+    /*TODO: AP capability mismatch
+     * is not checked here because
+     * no logic for beacon parsing
+     * is avilable for HS2.0.
+     */
+    if (pSession->bOSENAssociation)
         return eSIR_TRUE;
 
     return eSIR_FALSE;
@@ -2036,7 +2032,7 @@ tSirRetStatus limUpdateShortSlot(tpAniSirGlobal pMac, tpSirProbeRespBeacon pBeac
     if (nShortSlot != psessionEntry->shortSlotTimeSupported)
     {
         // Short slot time capability of AP has changed. Adopt to it.
-        PELOG1(limLog(pMac, LOG1, FL("Shortslot capability of AP changed: %d"),  nShortSlot);)
+        limLog(pMac, LOG1, FL("Shortslot capability of AP changed: %d"),  nShortSlot);
         ((tpSirMacCapabilityInfo)&psessionEntry->limCurrentBssCaps)->shortSlotTime = (tANI_U16)nShortSlot;
         psessionEntry->shortSlotTimeSupported = nShortSlot;
         pBeaconParams->fShortSlotTime = (tANI_U8) nShortSlot;
@@ -2110,7 +2106,7 @@ void limHandleBmpsStatusInd(tpAniSirGlobal pMac)
         case ePMM_STATE_UAPSD_SLEEP:
         case ePMM_STATE_UAPSD_WT_WAKEUP_RSP:
         case ePMM_STATE_WOWLAN:
-            PELOG1(limLog(pMac, LOG1, FL("Sending EXIT_BMPS_IND to SME "));)
+            limLog(pMac, LOG1, FL("Sending EXIT_BMPS_IND to SME "));
             limSendExitBmpsInd(pMac, eSME_BMPS_STATUS_IND_RCVD);
             break;
 

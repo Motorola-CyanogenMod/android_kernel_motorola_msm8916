@@ -2056,8 +2056,39 @@ eHalStatus csrGetParsedBssDescriptionIEs(tHalHandle hHal, tSirBssDescription *pB
     return (status);
 }
 
+eHalStatus csrProcessGetFrameLogCommand( tpAniSirGlobal pMac,
+                                         tSmeCmd *pCommand )
+{
+   tAniGetFrameLogReq *pMsg;
+   tANI_U16 msgLen;
+   eHalStatus status = eHAL_STATUS_FAILURE;
 
+   msgLen = sizeof(tAniGetFrameLogReq);
 
+   if ( NULL == pCommand )
+   {
+       smsLog( pMac, LOGE, FL("cannot process. cmd is null") );
+       return eHAL_STATUS_FAILURE;
+   }
+
+   pMsg = vos_mem_malloc(msgLen);
+   if ( NULL == pMsg )
+   {
+       smsLog( pMac, LOGE, FL("fail to allocate memory") );
+       return eHAL_STATUS_FAILURE;
+   }
+
+   pMsg->msgType= pal_cpu_to_be16((tANI_U16)WDA_GET_FRAME_LOG_REQ);
+   pMsg->msgLen= pal_cpu_to_be16(msgLen);
+
+   pMsg->pDevContext = pCommand->u.getFramelogCmd.pDevContext;
+   pMsg->getFramelogCallback= pCommand->u.getFramelogCmd.getFramelogCallback;
+   pMsg->getFrameLogCmdFlag = pCommand->u.getFramelogCmd.getFrameLogCmdFlag;
+
+   status = palSendMBMessage(pMac->hHdd, pMsg);
+
+   return( status );
+}
 
 tANI_BOOLEAN csrIsNULLSSID( tANI_U8 *pBssSsid, tANI_U8 len )
 {
@@ -3910,7 +3941,7 @@ tANI_BOOLEAN csrLookupPMKID( tpAniSirGlobal pMac, tANI_U32 sessionId, tANI_U8 *p
         fRC = TRUE;
     }
     while( 0 );
-    smsLog(pMac, LOGW, "csrLookupPMKID called return match = %d pMac->roam.NumPmkidCache = %d",
+    smsLog(pMac, LOG1, "csrLookupPMKID called return match = %d pMac->roam.NumPmkidCache = %d",
         fRC, pSession->NumPmkidCache);
 
     return fRC;
@@ -5178,6 +5209,14 @@ tANI_BOOLEAN csrIsSsidMatch( tpAniSirGlobal pMac, tANI_U8 *ssid1, tANI_U8 ssid1L
     tANI_BOOLEAN fMatch = FALSE;
 
     do {
+        // Check for the specification of the Broadcast SSID at the beginning
+        // of the list. If specified, then all SSIDs are matches
+        // (broadcast SSID means accept all SSIDs).
+        if ( ssid1Len == 0 )
+        {
+            fMatch = TRUE;
+            break;
+        }
 
         // There are a few special cases.  If the Bss description has a Broadcast SSID,
         // then our Profile must have a single SSID without Wildcards so we can program
@@ -5191,14 +5230,6 @@ tANI_BOOLEAN csrIsSsidMatch( tpAniSirGlobal pMac, tANI_U8 *ssid1, tANI_U8 ssid1L
             {
                 fMatch = TRUE;
             }
-            break;
-        }
-
-        // Check for the specification of the Broadcast SSID at the beginning of the list.
-        // If specified, then all SSIDs are matches (broadcast SSID means accept all SSIDs).
-        if ( ssid1Len == 0 )
-        {
-            fMatch = TRUE;
             break;
         }
 
@@ -5745,7 +5776,7 @@ tANI_BOOLEAN csrMatchBSS( tHalHandle hHal, tSirBssDescription *pBssDesc, tCsrSca
             break;
 
 #ifdef WLAN_FEATURE_VOWIFI_11R
-        if (pFilter->MDID.mdiePresent)
+        if (pFilter->MDID.mdiePresent && csrRoamIs11rAssoc(pMac))
         {
             if (pBssDesc->mdiePresent)
             {

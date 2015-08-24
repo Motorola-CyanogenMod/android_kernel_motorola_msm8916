@@ -34,9 +34,6 @@
 
   \brief virtual Operating System Services (vOSS): Non-Volatile storage API
 
-   Copyright 2008 (c) Qualcomm, Incorporated.  All Rights Reserved.
-
-   Qualcomm Confidential and Proprietary.
 
   ========================================================================*/
 
@@ -759,6 +756,14 @@ eNvVersionType vos_nv_getNvVersion
   \sa
   -------------------------------------------------------------------------*/
 v_U16_t vos_chan_to_freq(v_U8_t chanNum);
+
+/**------------------------------------------------------------------------
+  \brief vos_freq_to_chan -
+  \param   - input channel frequency to know channel number
+  \return Channel frequency
+  \sa
+  -------------------------------------------------------------------------*/
+v_U8_t vos_freq_to_chan(v_U32_t freq);
 
 /**------------------------------------------------------------------------
   \brief vos_is_nv_country_non_zero -

@@ -74,8 +74,8 @@
 
 #include "sapApi.h"
 #include "vos_trace.h"
-
-
+#include "vos_utils.h"
+#include <wlan_logging_sock_svc.h>
 
 #ifdef WLAN_BTAMP_FEATURE
 #include "bapApi.h"
@@ -104,6 +104,7 @@
  * ------------------------------------------------------------------------*/
 static VosContextType  gVosContext;
 static pVosContextType gpVosContext;
+static v_U8_t vos_multicast_logging;
 
 /*---------------------------------------------------------------------------
  * Forward declaration
@@ -421,6 +422,13 @@ VOS_STATUS vos_open( v_CONTEXT_t *pVosContext, void *devHandle )
      goto err_sme_close;
    }
 
+   if (gpVosContext->roamDelayStatsEnabled &&
+       !vos_roam_delay_stats_init())
+   {
+       VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                 "%s: Could not init roamDelayStats", __func__);
+   }
+
    VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_INFO_HIGH,
                "%s: VOSS successfully Opened", __func__);
 
@@ -580,6 +588,176 @@ VOS_STATUS vos_preStart( v_CONTEXT_t vosContext )
    }
 
    return VOS_STATUS_SUCCESS;
+}
+
+VOS_STATUS vos_mon_start( v_CONTEXT_t vosContext )
+{
+  VOS_STATUS vStatus          = VOS_STATUS_SUCCESS;
+  pVosContextType pVosContext = (pVosContextType)vosContext;
+
+  if (pVosContext == NULL)
+   {
+       VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+          "%s: mismatch in context",__func__);
+       return VOS_STATUS_E_FAILURE;
+   }
+
+  if (( pVosContext->pWDAContext == NULL) || ( pVosContext->pTLContext == NULL))
+  {
+     if (pVosContext->pWDAContext == NULL)
+        VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+            "%s: WDA NULL context", __func__);
+     else
+        VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+            "%s: TL NULL context", __func__);
+
+     return VOS_STATUS_E_FAILURE;
+  }
+
+   /* Reset wda wait event */
+   vos_event_reset(&pVosContext->wdaCompleteEvent);
+
+   /*call WDA pre start*/
+   vStatus = WDA_preStart(pVosContext);
+   if (!VOS_IS_STATUS_SUCCESS(vStatus))
+   {
+      VOS_TRACE(VOS_MODULE_ID_SYS, VOS_TRACE_LEVEL_ERROR,
+             "Failed to WDA prestart ");
+      VOS_ASSERT(0);
+      return VOS_STATUS_E_FAILURE;
+   }
+
+   /* Need to update time out of complete */
+   vStatus = vos_wait_single_event( &pVosContext->wdaCompleteEvent, 1000);
+   if ( vStatus != VOS_STATUS_SUCCESS )
+   {
+      if ( vStatus == VOS_STATUS_E_TIMEOUT )
+      {
+         VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+          "%s: Timeout occurred before WDA complete",__func__);
+      }
+      else
+      {
+         VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+           "%s: WDA_preStart reporting  other error",__func__);
+      }
+      VOS_ASSERT( 0 );
+      return VOS_STATUS_E_FAILURE;
+   }
+
+    vStatus = WDA_NVDownload_Start(pVosContext);
+
+    if ( vStatus != VOS_STATUS_SUCCESS )
+    {
+       VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                   "%s: Failed to start NV Download",__func__);
+       return VOS_STATUS_E_FAILURE;
+    }
+
+    vStatus = vos_wait_single_event(&(pVosContext->wdaCompleteEvent), 1000 * 30);
+
+    if ( vStatus != VOS_STATUS_SUCCESS )
+    {
+       if ( vStatus == VOS_STATUS_E_TIMEOUT )
+       {
+          VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                     "%s: Timeout occurred before WDA_NVDownload_Start complete",__func__);
+       }
+       else
+       {
+         VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                    "%s: WDA_NVDownload_Start reporting  other error",__func__);
+       }
+       VOS_ASSERT(0);
+       return VOS_STATUS_E_FAILURE;
+    }
+
+    vStatus = WDA_start(pVosContext);
+    if (vStatus != VOS_STATUS_SUCCESS)
+    {
+       VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                 "%s: Failed to start WDA",__func__);
+       return VOS_STATUS_E_FAILURE;
+    }
+
+  /** START TL */
+  vStatus = WLANTL_Start(pVosContext);
+  if (!VOS_IS_STATUS_SUCCESS(vStatus))
+  {
+    VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_FATAL,
+               "%s: Failed to start TL", __func__);
+    goto err_wda_stop;
+  }
+
+  return VOS_STATUS_SUCCESS;
+
+err_wda_stop:
+   vos_event_reset(&(pVosContext->wdaCompleteEvent));
+   WDA_stop(pVosContext, HAL_STOP_TYPE_RF_KILL);
+   vStatus = vos_wait_single_event(&(pVosContext->wdaCompleteEvent), 1000);
+   if(vStatus != VOS_STATUS_SUCCESS)
+   {
+      if(vStatus == VOS_STATUS_E_TIMEOUT)
+      {
+         VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                   "%s: Timeout occurred before WDA_stop complete",__func__);
+
+      }
+      else
+      {
+        VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                  "%s: WDA_stop reporting  other error",__func__);
+      }
+      VOS_ASSERT(0);
+   }
+  return VOS_STATUS_E_FAILURE;
+}
+
+VOS_STATUS vos_mon_stop( v_CONTEXT_t vosContext )
+{
+  VOS_STATUS vosStatus;
+
+  vos_event_reset( &(gpVosContext->wdaCompleteEvent) );
+
+  vosStatus = WDA_stop( vosContext, HAL_STOP_TYPE_RF_KILL );
+
+  if (!VOS_IS_STATUS_SUCCESS(vosStatus))
+  {
+     VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+         "%s: Failed to stop WDA", __func__);
+     VOS_ASSERT( VOS_IS_STATUS_SUCCESS( vosStatus ) );
+     WDA_setNeedShutdown(vosContext);
+  }
+  else
+  {
+    vosStatus = vos_wait_single_event( &(gpVosContext->wdaCompleteEvent),
+                                       VOS_WDA_STOP_TIMEOUT );
+
+    if ( vosStatus != VOS_STATUS_SUCCESS )
+    {
+       if ( vosStatus == VOS_STATUS_E_TIMEOUT )
+       {
+          VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+           "%s: Timeout occurred before WDA complete", __func__);
+       }
+       else
+       {
+          VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+           "%s: WDA_stop reporting other error", __func__ );
+       }
+       WDA_setNeedShutdown(vosContext);
+    }
+  }
+
+  vosStatus = WLANTL_Stop( vosContext );
+  if (!VOS_IS_STATUS_SUCCESS(vosStatus))
+  {
+     VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+         "%s: Failed to stop TL", __func__);
+     VOS_ASSERT( VOS_IS_STATUS_SUCCESS( vosStatus ) );
+  }
+
+  return VOS_STATUS_SUCCESS;
 }
 
 /*---------------------------------------------------------------------------
@@ -818,8 +996,18 @@ VOS_STATUS vos_stop( v_CONTEXT_t vosContext )
   }
   else
   {
-    vosStatus = vos_wait_single_event( &(gpVosContext->wdaCompleteEvent),
+    if(wcnss_device_is_shutdown())
+    {
+       vosStatus = VOS_STATUS_E_TIMEOUT;
+       VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+        "%s: Wait for WDA_Stop complete event not needed due to SSR",
+         __func__);
+    }
+    else
+    {
+       vosStatus = vos_wait_single_event( &(gpVosContext->wdaCompleteEvent),
                                        VOS_WDA_STOP_TIMEOUT );
+    }
 
     if ( vosStatus != VOS_STATUS_SUCCESS )
     {
@@ -974,6 +1162,13 @@ VOS_STATUS vos_close( v_CONTEXT_t vosContext )
      VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
          "%s: failed to destroy ProbeEvent", __func__);
      VOS_ASSERT( VOS_IS_STATUS_SUCCESS( vosStatus ) );
+  }
+
+  if (gpVosContext->roamDelayStatsEnabled &&
+      !vos_roam_delay_stats_deinit())
+  {
+      VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                "%s: Could not deinit roamDelayStats", __func__);
   }
 
   return VOS_STATUS_SUCCESS;
@@ -1446,7 +1641,30 @@ VOS_STATUS vos_free_context( v_VOID_t *pVosContext, VOS_MODULE_ID moduleID,
   return VOS_STATUS_SUCCESS;
 
 } /* vos_free_context() */
-                                                 
+
+/**---------------------------------------------------------------------------
+
+  \brief vos_logger_pkt_serialize() - queue a logging vos pkt
+
+  This API allows single vos pkt to be queued and later sent to userspace by
+  logger thread.
+
+  \param pPacket - a pointer to a vos pkt to be queued
+         pkt_type - type of pkt to be queued
+                    LOG_PKT_TYPE_DATA_MGMT - frame log i.e data/mgmt pkts
+
+  \return VOS_STATUS_SUCCESS - the pkt has been successfully queued.
+          VOS_STATUS_E_FAILURE - the pkt queue handler has reported
+          a failure.
+  --------------------------------------------------------------------------*/
+VOS_STATUS vos_logger_pkt_serialize( vos_pkt_t *pPacket, uint32 pkt_type)
+{
+#ifdef WLAN_LOGGING_SOCK_SVC_ENABLE
+      return wlan_queue_logpkt_for_app(pPacket, pkt_type);
+#else
+      return vos_pkt_return_packet(pPacket);
+#endif
+}
 
 /**---------------------------------------------------------------------------
   
@@ -1941,28 +2159,6 @@ v_BOOL_t vos_is_apps_power_collapse_allowed(void* pHddCtx)
   return hdd_is_apps_power_collapse_allowed((hdd_context_t*) pHddCtx);
 }
 
-void vos_abort_mac_scan(v_U8_t sessionId)
-{
-    hdd_context_t *pHddCtx = NULL;
-    v_CONTEXT_t pVosContext        = NULL;
-
-    /* Get the Global VOSS Context */
-    pVosContext = vos_get_global_context(VOS_MODULE_ID_SYS, NULL);
-    if(!pVosContext) {
-       hddLog(VOS_TRACE_LEVEL_FATAL, "%s: Global VOS context is Null", __func__);
-       return;
-    }
-    
-    /* Get the HDD context */
-    pHddCtx = (hdd_context_t *)vos_get_context(VOS_MODULE_ID_HDD, pVosContext );
-    if(!pHddCtx) {
-       hddLog(VOS_TRACE_LEVEL_FATAL, "%s: HDD context is Null", __func__);
-       return;
-    }
-
-    hdd_abort_mac_scan(pHddCtx, sessionId, eCSR_SCAN_ABORT_DEFAULT);
-    return;
-}
 /*---------------------------------------------------------------------------
 
   \brief vos_shutdown() - shutdown VOS
@@ -2258,3 +2454,200 @@ v_BOOL_t vos_is_wlan_in_badState(VOS_MODULE_ID moduleId,
     }
     return pVosWDCtx->isFatalError;
 }
+
+/**---------------------------------------------------------------------------
+
+  \brief vos_is_fw_logging_enabled() -
+
+  API to check if firmware is configured to send logs using DXE channel
+
+  \param  -  None
+
+  \return -  0: firmware logging is not enabled (it may or may not
+                be supported)
+             1: firmware logging is enabled
+
+  --------------------------------------------------------------------------*/
+v_U8_t vos_is_fw_logging_enabled(void)
+{
+   return hdd_is_fw_logging_enabled();
+}
+
+/**---------------------------------------------------------------------------
+
+  \brief vos_is_fw_ev_logging_enabled() -
+
+  API to check if firmware is configured to send live logs using DXE channel
+
+  \param  -  None
+
+  \return -  0: firmware logging is not enabled (it may or may not
+                be supported)
+             1: firmware logging is enabled
+
+  --------------------------------------------------------------------------*/
+v_U8_t vos_is_fw_ev_logging_enabled(void)
+{
+   return hdd_is_fw_ev_logging_enabled();
+}
+
+/**---------------------------------------------------------------------------
+
+  \brief vos_is_fw_logging_supported() -
+
+  API to check if firmware supports to send logs using DXE channel
+
+  \param  -  None
+
+  \return -  0: firmware logging is not supported
+             1: firmware logging is supported
+
+  --------------------------------------------------------------------------*/
+v_U8_t vos_is_fw_logging_supported(void)
+{
+   return IS_FRAME_LOGGING_SUPPORTED_BY_FW;
+}
+/**---------------------------------------------------------------------------
+
+  \brief vos_set_roam_delay_stats_enabled() -
+
+  API to set value of roamDelayStatsEnabled in vos context
+
+  \param  -  value to be updated
+
+  \return -  NONE
+
+  --------------------------------------------------------------------------*/
+
+v_VOID_t  vos_set_roam_delay_stats_enabled(v_U8_t value)
+{
+    gpVosContext->roamDelayStatsEnabled = value;
+}
+
+
+/**---------------------------------------------------------------------------
+
+  \brief vos_get_roam_delay_stats_enabled() -
+
+  API to get value of roamDelayStatsEnabled from vos context
+
+  \param  -  NONE
+
+  \return -  value of roamDelayStatsEnabled
+
+  --------------------------------------------------------------------------*/
+
+v_U8_t  vos_get_roam_delay_stats_enabled(v_VOID_t)
+{
+    return gpVosContext->roamDelayStatsEnabled;
+}
+
+v_U32_t vos_get_dxeReplenishRXTimerVal(void)
+{
+    hdd_context_t *pHddCtx = NULL;
+    v_CONTEXT_t pVosContext = NULL;
+
+    /* Get the Global VOSS Context */
+    pVosContext = vos_get_global_context(VOS_MODULE_ID_SYS, NULL);
+    if(!pVosContext) {
+       hddLog(VOS_TRACE_LEVEL_FATAL, "%s: Global VOS context is Null", __func__);
+       return 0;
+    }
+
+    /* Get the HDD context */
+    pHddCtx = (hdd_context_t *)vos_get_context(VOS_MODULE_ID_HDD, pVosContext );
+    if(!pHddCtx) {
+       hddLog(VOS_TRACE_LEVEL_FATAL, "%s: HDD context is Null", __func__);
+       return 0;
+     }
+
+   return pHddCtx->cfg_ini->dxeReplenishRXTimerVal;
+}
+
+v_BOOL_t vos_get_dxeSSREnable(void)
+{
+    hdd_context_t *pHddCtx = NULL;
+    v_CONTEXT_t pVosContext = NULL;
+
+    /* Get the Global VOSS Context */
+    pVosContext = vos_get_global_context(VOS_MODULE_ID_SYS, NULL);
+    if(!pVosContext) {
+       hddLog(VOS_TRACE_LEVEL_FATAL, "%s: Global VOS context is Null", __func__);
+       return FALSE;
+    }
+
+    /* Get the HDD context */
+    pHddCtx = (hdd_context_t *)vos_get_context(VOS_MODULE_ID_HDD, pVosContext );
+    if(!pHddCtx) {
+       hddLog(VOS_TRACE_LEVEL_FATAL, "%s: HDD context is Null", __func__);
+       return FALSE;
+     }
+
+   return pHddCtx->cfg_ini->dxeSSREnable;
+}
+
+v_VOID_t vos_flush_work(struct work_struct *work)
+{
+#if defined (WLAN_OPEN_SOURCE)
+   cancel_work_sync(work);
+#else
+   wcnss_flush_work(work);
+#endif
+}
+
+v_VOID_t vos_flush_delayed_work(struct delayed_work *dwork)
+{
+#if defined (WLAN_OPEN_SOURCE)
+   cancel_delayed_work_sync(dwork);
+#else
+   wcnss_flush_delayed_work(dwork);
+#endif
+}
+
+v_VOID_t vos_init_work(struct work_struct *work , void *callbackptr)
+{
+#if defined (WLAN_OPEN_SOURCE)
+   INIT_WORK(work,callbackptr);
+#else
+   wcnss_init_work(work, callbackptr);
+#endif
+}
+
+v_VOID_t vos_init_delayed_work(struct delayed_work *dwork , void *callbackptr)
+{
+#if defined (WLAN_OPEN_SOURCE)
+   INIT_DELAYED_WORK(dwork,callbackptr);
+#else
+   wcnss_init_delayed_work(dwork, callbackptr);
+#endif
+}
+
+/**
+ * vos_set_multicast_logging() - Set mutlicast logging value
+ * @value: Value of multicast logging
+ *
+ * Set the multicast logging value which will indicate
+ * whether to multicast host and fw messages even
+ * without any registration by userspace entity
+ *
+ * Return: None
+ */
+void vos_set_multicast_logging(uint8_t value)
+{
+   vos_multicast_logging = value;
+}
+
+/**
+ * vos_is_multicast_logging() - Get multicast logging value
+ *
+ * Get the multicast logging value which will indicate
+ * whether to multicast host and fw messages even
+ * without any registration by userspace entity
+ *
+ * Return: 0 - Multicast logging disabled, 1 - Multicast logging enabled
+ */
+v_U8_t vos_is_multicast_logging(void)
+{
+   return vos_multicast_logging;
+}
+

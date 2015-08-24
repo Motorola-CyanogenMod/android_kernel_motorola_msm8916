@@ -114,15 +114,6 @@ eHalStatus pmcOpen (tHalHandle hHal)
         return eHAL_STATUS_FAILURE;
     }
 
-#ifdef FEATURE_WLAN_DIAG_SUPPORT    
-    /* Allocate a timer used to report current PMC state through periodic DIAG event */
-    if (vos_timer_init(&pMac->pmc.hDiagEvtTimer, VOS_TIMER_TYPE_SW, pmcDiagEvtTimerExpired, hHal) != VOS_STATUS_SUCCESS)
-    {
-        pmcLog(pMac, LOGE, FL("Cannot allocate timer for diag event reporting"));
-        return eHAL_STATUS_FAILURE;
-    }
-#endif
-
     //Initialize the default value for Bmps related config. 
     pMac->pmc.bmpsConfig.trafficMeasurePeriod = BMPS_TRAFFIC_TIMER_DEFAULT;
     pMac->pmc.bmpsConfig.bmpsPeriod = WNI_CFG_LISTEN_INTERVAL_STADEF;
@@ -251,13 +242,6 @@ eHalStatus pmcStart (tHalHandle hHal)
                        sizeof(tSirMacHTMIMOPowerSaveState)) != eHAL_STATUS_SUCCESS)
         return eHAL_STATUS_FAILURE;
 
-#ifdef FEATURE_WLAN_DIAG_SUPPORT 
-    if (pmcStartDiagEvtTimer(hHal) != eHAL_STATUS_SUCCESS)
-    {
-       return eHAL_STATUS_FAILURE;
-    }
-#endif
-
 #if defined(ANI_LOGDUMP)
     pmcDumpInit(hHal);
 #endif
@@ -296,10 +280,6 @@ eHalStatus pmcStop (tHalHandle hHal)
     }
 
     pmcStopTrafficTimer(hHal);
-
-#ifdef FEATURE_WLAN_DIAG_SUPPORT    
-    pmcStopDiagEvtTimer(hHal);
-#endif
 
     if (vos_timer_stop(&pMac->pmc.hExitPowerSaveTimer) != VOS_STATUS_SUCCESS)
     {
@@ -360,12 +340,6 @@ eHalStatus pmcClose (tHalHandle hHal)
     {
         pmcLog(pMac, LOGE, FL("Cannot deallocate traffic timer"));
     }
-#ifdef FEATURE_WLAN_DIAG_SUPPORT    
-    if (vos_timer_destroy(&pMac->pmc.hDiagEvtTimer) != VOS_STATUS_SUCCESS)
-    {
-        pmcLog(pMac, LOGE, FL("Cannot deallocate timer for diag event reporting"));
-    }
-#endif
     if (vos_timer_destroy(&pMac->pmc.hExitPowerSaveTimer) != VOS_STATUS_SUCCESS)
     {
         pmcLog(pMac, LOGE, FL("Cannot deallocate exit power save mode timer"));
@@ -1258,7 +1232,7 @@ static void pmcProcessResponse( tpAniSirGlobal pMac, tSirSmeRsp *pMsg )
     {
         pCommand = GET_BASE_ADDR(pEntry, tSmeCmd, Link);
 
-        pmcLog(pMac, LOG2, FL("process message = %d"), pMsg->messageType);
+        pmcLog(pMac, LOG2, FL("process message = 0x%x"), pMsg->messageType);
 
     /* Process each different type of message. */
     switch (pMsg->messageType)
@@ -1442,7 +1416,7 @@ static void pmcProcessResponse( tpAniSirGlobal pMac, tSirSmeRsp *pMsg )
         case eWNI_PMC_ENTER_UAPSD_RSP:
             pmcLog(pMac, LOG2, FL("Rcvd eWNI_PMC_ENTER_UAPSD_RSP with status = %d"), pMsg->statusCode);
             if( eSmeCommandEnterUapsd != pCommand->command )
-        {
+            {
                 pmcLog(pMac, LOGW, FL("Rcvd eWNI_PMC_ENTER_UAPSD_RSP without request"));
                 fRemoveCommand = eANI_BOOLEAN_FALSE;
                 break;
@@ -1455,23 +1429,32 @@ static void pmcProcessResponse( tpAniSirGlobal pMac, tSirSmeRsp *pMsg )
                 break;
             }
 
-         /* Enter UAPSD State if response indicates success. */
+            /* Enter UAPSD State if response indicates success. */
             if (pMsg->statusCode == eSIR_SME_SUCCESS) 
             {
                 pmcEnterUapsdState(pMac);
                 pmcDoStartUapsdCallbacks(pMac, eHAL_STATUS_SUCCESS);
-         }
-         /* If response is failure, then we try to put the chip back in
-            BMPS mode*/
-            else {
+            }
+            else
+            {
+                /* If response is failure, then we try to put the chip back in
+                   BMPS mode*/
+                tANI_BOOLEAN OrigUapsdReqState = pMac->pmc.uapsdSessionRequired;
                 pmcLog(pMac, LOGE, "PMC: response message to request to enter "
                    "UAPSD indicates failure, status %d", pMsg->statusCode);
+
                 //Need to reset the UAPSD flag so pmcEnterBmpsState won't try to enter UAPSD.
                 pMac->pmc.uapsdSessionRequired = FALSE;
                 pmcEnterBmpsState(pMac);
-                //UAPSD will not be retied in this case so tell requester we are done with failure
-                pmcDoStartUapsdCallbacks(pMac, eHAL_STATUS_FAILURE);
-         }
+
+                if (pMsg->statusCode != eSIR_SME_UAPSD_REQ_INVALID)
+                {
+                    //UAPSD will not be retied in this case so tell requester we are done with failure
+                    pmcDoStartUapsdCallbacks(pMac, eHAL_STATUS_FAILURE);
+                }
+                else
+                    pMac->pmc.uapsdSessionRequired = OrigUapsdReqState;
+            }
          break;
 
       /* We got a response to our Stop UAPSD request.  */
@@ -2182,7 +2165,6 @@ eHalStatus pmcWowlAddBcastPattern (
 
 #ifdef FEATURE_WLAN_DIAG_SUPPORT
     vos_log_powersave_wow_add_ptrn_pkt_type *log_ptr = NULL;
-    WLAN_VOS_DIAG_LOG_ALLOC(log_ptr, vos_log_powersave_wow_add_ptrn_pkt_type, LOG_WLAN_POWERSAVE_WOW_ADD_PTRN_C);
 #endif //#ifdef FEATURE_WLAN_DIAG_SUPPORT
 
     pmcLog(pMac, LOG2, "PMC: entering pmcWowlAddBcastPattern");
@@ -2190,16 +2172,24 @@ eHalStatus pmcWowlAddBcastPattern (
     if(pattern == NULL)
     {
         pmcLog(pMac, LOGE, FL("Null broadcast pattern being passed"));
+#ifdef FEATURE_WLAN_DIAG_SUPPORT
+        WLAN_VOS_DIAG_LOG_FREE(log_ptr);
+#endif
         return eHAL_STATUS_FAILURE;
     }
 
     if( pSession == NULL)
     {
         pmcLog(pMac, LOGE, FL("Session not found "));
+#ifdef FEATURE_WLAN_DIAG_SUPPORT
+        WLAN_VOS_DIAG_LOG_FREE(log_ptr);
+#endif
         return eHAL_STATUS_FAILURE;
     }
 
 #ifdef FEATURE_WLAN_DIAG_SUPPORT
+    WLAN_VOS_DIAG_LOG_ALLOC(log_ptr, vos_log_powersave_wow_add_ptrn_pkt_type,
+        LOG_WLAN_POWERSAVE_WOW_ADD_PTRN_C);
     if( log_ptr )
     {
        log_ptr->pattern_id = pattern->ucPatternId;
@@ -2216,9 +2206,9 @@ eHalStatus pmcWowlAddBcastPattern (
        /* 1 bit in the pattern mask denotes 1 byte of pattern hence pattern mask size is 1/8 */
        vos_mem_copy(log_ptr->pattern_mask, pattern->ucPatternMask,
                     SIR_WOWL_BCAST_PATTERN_MAX_SIZE >> 3);
+       WLAN_VOS_DIAG_LOG_REPORT(log_ptr);
     }
 
-    WLAN_VOS_DIAG_LOG_REPORT(log_ptr);
 #endif
 
 
